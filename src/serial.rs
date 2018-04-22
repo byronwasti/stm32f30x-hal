@@ -171,6 +171,64 @@ macro_rules! hal {
                 pub fn free(self) -> ($USARTX, (TX, RX)) {
                     (self.usart, self.pins)
                 }
+
+                /// Clears the overflow error by reading whatever is in the rdr register
+                pub fn clear_overflow_error(&mut self) -> u8 {
+                    self.usart.icr.write(|w| w.orecf().set_bit());
+
+                    (self.usart.rdr.read().bits() & 0xFF) as u8
+                }
+            }
+            
+            impl<TX, RX> serial::Read<u8> for Serial<$USARTX, (TX, RX)> {
+                type Error = Error;
+
+                fn read(&mut self) -> nb::Result<u8, Error> {
+                    let isr = self.usart.isr.read();
+
+                    if isr.rxne().bit_is_set() {
+                        Ok(
+                                (self.usart.rdr.read().bits() & 0xFF) as u8
+                            )
+                    } else {
+                        Err(if isr.pe().bit_is_set() {
+                            nb::Error::Other(Error::Parity)
+                        } else if isr.fe().bit_is_set() {
+                            nb::Error::Other(Error::Framing)
+                        } else if isr.nf().bit_is_set() {
+                            nb::Error::Other(Error::Noise)
+                        } else if isr.ore().bit_is_set() {
+                            nb::Error::Other(Error::Overrun)
+                        } else {
+                            nb::Error::WouldBlock
+                        })
+                    }
+                }
+            }
+
+            impl<TX, RX> serial::Write<u8> for Serial<$USARTX, (TX, RX)> {
+                type Error = !;
+
+                fn flush(&mut self) -> nb::Result<(), !> {
+                    let isr = self.usart.isr.read();
+
+                    if isr.tc().bit_is_set() {
+                        Ok(())
+                    } else {
+                        Err(nb::Error::WouldBlock)
+                    }
+                }
+
+                fn write(&mut self, byte: u8) -> nb::Result<(), !> {
+                    let isr = self.usart.isr.read();
+
+                    if isr.txe().bit_is_set() {
+                        self.usart.tdr.write(|w| w.tdr().bits(byte as u16));
+                        Ok(())
+                    } else {
+                        Err(nb::Error::WouldBlock)
+                    }
+                }
             }
 
             impl serial::Read<u8> for Rx<$USARTX> {
@@ -180,22 +238,26 @@ macro_rules! hal {
                     // NOTE(unsafe) atomic read with no side effects
                     let isr = unsafe { (*$USARTX::ptr()).isr.read() };
 
-                    Err(if isr.pe().bit_is_set() {
-                        nb::Error::Other(Error::Parity)
-                    } else if isr.fe().bit_is_set() {
-                        nb::Error::Other(Error::Framing)
-                    } else if isr.nf().bit_is_set() {
-                        nb::Error::Other(Error::Noise)
-                    } else if isr.ore().bit_is_set() {
-                        nb::Error::Other(Error::Overrun)
-                    } else if isr.rxne().bit_is_set() {
-                        // NOTE(read_volatile) see `write_volatile` below
-                        return Ok(unsafe {
+                    if isr.rxne().bit_is_set() {
+                        Ok(unsafe {
                             ptr::read_volatile(&(*$USARTX::ptr()).rdr as *const _ as *const _)
-                        });
+                        })
                     } else {
-                        nb::Error::WouldBlock
-                    })
+                        Err(if isr.pe().bit_is_set() {
+                            nb::Error::Other(Error::Parity)
+                        } else if isr.fe().bit_is_set() {
+                            nb::Error::Other(Error::Framing)
+                        } else if isr.nf().bit_is_set() {
+                            nb::Error::Other(Error::Noise)
+                        } else if isr.ore().bit_is_set() {
+                            unsafe {
+                                ptr::read_volatile(&(*$USARTX::ptr()).rdr as *const _ as *const _);
+                            }
+                            nb::Error::Other(Error::Overrun)
+                        } else {
+                            nb::Error::WouldBlock
+                        })
+                    }
                 }
             }
 
