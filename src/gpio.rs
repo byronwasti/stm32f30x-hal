@@ -97,6 +97,8 @@ macro_rules! gpio {
             use hal::digital::OutputPin;
             use stm32f30x::{$gpioy, $GPIOX};
 
+            use stm32f30x::SYSCFG;
+            use stm32f30x::EXTI;
             use rcc::AHB;
             use super::{
                 AF4, AF5, AF6, AF7, Floating, GpioExt, Input, OpenDrain, Output,
@@ -159,7 +161,8 @@ macro_rules! gpio {
             }
 
             impl AFRH {
-                pub(crate) fn afr(&mut self) -> &$gpioy::AFRH {
+                /// Get the afr
+                pub fn afr(&mut self) -> &$gpioy::AFRH {
                     unsafe { &(*$GPIOX::ptr()).afrh }
                 }
             }
@@ -170,7 +173,8 @@ macro_rules! gpio {
             }
 
             impl MODER {
-                pub(crate) fn moder(&mut self) -> &$gpioy::MODER {
+                /// Get the Moder
+                pub fn moder(&mut self) -> &$gpioy::MODER {
                     unsafe { &(*$GPIOX::ptr()).moder }
                 }
             }
@@ -192,7 +196,8 @@ macro_rules! gpio {
             }
 
             impl PUPDR {
-                pub(crate) fn pupdr(&mut self) -> &$gpioy::PUPDR {
+                /// Get Pupdr
+                pub fn pupdr(&mut self) -> &$gpioy::PUPDR {
                     unsafe { &(*$GPIOX::ptr()).pupdr }
                 }
             }
@@ -480,6 +485,36 @@ macro_rules! gpio {
                     fn set_low(&mut self) {
                         // NOTE(unsafe) atomic write to a stateless register
                         unsafe { (*$GPIOX::ptr()).bsrr.write(|w| w.bits(1 << (16 + $i))) }
+                    }
+                }
+
+                impl<MODE> $PXi<Input<MODE>> {
+                    /// Check if pin is high
+                    pub fn is_high(&self) -> bool {
+                        !self.is_low()
+                    }
+
+                    /// Check if pin is low
+                    pub fn is_low(&self) -> bool {
+                        unsafe { (*$GPIOX::ptr()).idr.read().bits() & (1 << $i) == 0 }
+                    }
+
+                    /// Listen for interrupts
+                    /// Hard-coded for EXTI3 / PB8 / Falling trigger
+                    pub fn listen(&self, syscfg: &mut SYSCFG, exti: &mut EXTI) {
+                        // Set mask to allow interrupt & event
+                        exti.imr1.modify(|_, w| w.mr8().set_bit());
+                        //exti.emr1.modify(|_, w| w.mr8().set_bit());
+
+                        // Falling trigger
+                        exti.ftsr1.modify(|_, w| w.tr8().set_bit());
+
+                        // Set up syscfg to link GPIO to EXTI
+                        syscfg.exticr3.modify(|_, w| unsafe { w.exti8().bits(0b001) });
+                        //syscfg.exticr3.modify(|_, w| unsafe { w.bits(0b001) });
+
+                        // Software interrupt (?)
+                        //exti.swier1.modify(|_, w| w.swier8().set_bit());
                     }
                 }
             )+
